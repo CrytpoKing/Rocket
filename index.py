@@ -8,117 +8,122 @@ app = Flask(__name__)
 # Your Serper API Key
 SERPER_API_KEY = "be17ec094e7663c3d4be5ad14f89429ae34ed76f"
 
-def volume_extractor(product, location):
-    url = "https://google.serper.dev/search"
-    all_leads = []
-    
-    # Diverse search variations to hit different databases
-    search_variations = [
-        f'"{product}" "{location}" email OR "contact"',
-        f'"{product}" "{location}" @gmail.com',
-        f'site:yellowpages.com "{product}" "{location}"',
-        f'site:thomasnet.com "{product}" "{location}"',
-        f'site:facebook.com "{product}" "{location}" "contact"'
-    ]
-    
-    headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+class DirectorScanner:
+    def __init__(self, product, location):
+        self.product = product
+        self.location = location
+        self.leads = []
+        self.headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
 
-    for query in search_variations:
-        # Check multiple pages for each variation to build volume
-        for page in range(1, 5): 
-            payload = {"q": query, "num": 20, "page": page}
+    def scan_source(self, platform_query, source_name):
+        """Generic scanner for different platforms via Serper"""
+        url = "https://google.serper.dev/search"
+        # We go 5 pages deep for each specific platform
+        for page in range(1, 6):
+            payload = {"q": platform_query, "num": 20, "page": page}
             try:
-                response = requests.post(url, headers=headers, json=payload, timeout=15)
+                response = requests.post(url, headers=self.headers, json=payload, timeout=15)
                 data = response.json()
-                
                 for item in data.get('organic', []):
                     snippet = item.get('snippet', '')
-                    title = item.get('title', 'Business')
-                    
-                    # 1. Extract Emails
                     emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
-                    
-                    # 2. Extract Phone Numbers (Looking for common international/local patterns)
-                    # This regex looks for +xxx, (xxx), or simple digit strings common in business
-                    phones = re.findall(r'\+?\d[\d\-\s\(\)]{8,}\d', snippet)
+                    phones = re.findall(r'\+?\d[\d\-\s\(\)]{9,}\d', snippet)
                     
                     if emails:
                         for email in set(emails):
                             if not any(x in email.lower() for x in ['png', 'jpg', 'wix']):
-                                all_leads.append({
-                                    "Company": title,
+                                self.leads.append({
+                                    "Company": item.get('title', 'Business'),
                                     "Email": email.lower(),
-                                    "Phone": phones[0] if phones else "Request on Site",
-                                    "Link": item.get('link', '#')
+                                    "Phone": phones[0] if phones else "N/A",
+                                    "Source_URL": item.get('link', '#'),
+                                    "Director": source_name
                                 })
-                if len(all_leads) >= 300: break # Safety cap
             except:
-                continue
-                
-    # Deduplicate by Email
-    unique_leads = {v['Email']: v for v in all_leads}.values()
-    return list(unique_leads)
+                break
 
-# --- UI WITH PAGINATION & PHONE NUMBERS ---
+    def run_full_scan(self):
+        # 1. SCAN GOOGLE (General)
+        self.scan_source(f'"{self.product}" "{self.location}" email', "Google Search")
+        
+        # 2. SCAN BING (Via Serper search footprint)
+        self.scan_source(f'site:bing.com "{self.product}" "{self.location}" email', "Bing Indexed")
+        
+        # 3. SCAN YELLOW PAGES
+        self.scan_source(f'site:yellowpages.com "{self.product}" "{self.location}"', "Yellow Pages")
+        
+        # 4. SCAN THOMASNET
+        self.scan_source(f'site:thomasnet.com "{self.product}" "{self.location}"', "ThomasNet")
+        
+        # 5. SCAN FACEBOOK/LINKEDIN (Directories of businesses)
+        self.scan_source(f'site:facebook.com "{self.product}" "{self.location}" email', "Facebook Business")
+        self.scan_source(f'site:linkedin.com/company "{self.product}" "{self.location}"', "LinkedIn Directory")
+
+        # Deduplicate
+        unique = {v['Email']: v for v in self.leads}.values()
+        return list(unique)
+
+# --- UI WITH SOURCE TRACKING ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Institutional Lead Engine 2025</title>
+    <title>Multi-Director Lead Engine</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; margin: 0; padding: 30px; }
-        .container { max-width: 1200px; margin: auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
-        .search-form { display: flex; gap: 10px; margin-bottom: 25px; }
-        input { flex: 1; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }
-        button { background: #007bff; color: white; border: none; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-        .stats { background: #eef2f7; padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; margin-bottom: 20px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
-        th { background: #f8f9fa; }
-        .badge-email { background: #e1f5fe; color: #0288d1; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
-        .badge-phone { background: #e8f5e9; color: #2e7d32; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
+        .container { max-width: 1400px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 5px 25px rgba(0,0,0,0.1); }
+        .search-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 15px; margin-bottom: 30px; }
+        input { padding: 15px; border: 1px solid #ccc; border-radius: 8px; }
+        button { background: #1a73e8; color: white; border: none; padding: 15px 40px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        .counter-badge { background: #34495e; color: white; padding: 8px 16px; border-radius: 5px; margin-bottom: 10px; display: inline-block; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #f8f9fa; padding: 12px; border-bottom: 2px solid #dee2e6; text-align: left; }
+        td { padding: 10px; border-bottom: 1px solid #eee; }
+        .source-tag { background: #e8f5e9; color: #2e7d32; padding: 3px 7px; border-radius: 4px; font-size: 11px; font-weight: bold; }
         .pagination { margin-top: 20px; text-align: center; }
-        .page-link { padding: 8px 16px; margin: 0 4px; border: 1px solid #007bff; color: #007bff; text-decoration: none; border-radius: 4px; }
-        .page-link.active { background: #007bff; color: white; }
+        .p-btn { padding: 10px 20px; border: 1px solid #1a73e8; color: #1a73e8; text-decoration: none; border-radius: 5px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🚀 High-Volume Lead Extractor</h2>
+        <h2>🌍 Multi-Director Lead Engine <small>V2025.12</small></h2>
         <form class="search-form" action="/search" method="get">
             <input type="hidden" name="page" value="1">
             <input type="text" name="product" placeholder="Product/Service" required>
             <input type="text" name="location" placeholder="Location" required>
-            <button type="submit">Extract Leads</button>
+            <button type="submit">Scan All Directors</button>
         </form>
 
         {% if results %}
-        <div class="stats">
-            <span><strong>Query:</strong> {{ query_info }}</span>
-            <span><strong>Total Found:</strong> {{ total_count }} Leads</span>
-        </div>
-        
+        <div class="counter-badge">Total Unique Leads Found: {{ total_count }}</div>
         <table>
             <thead>
-                <tr><th>Business Name</th><th>Contact Email</th><th>Phone Number</th></tr>
+                <tr>
+                    <th>Business Name</th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                    <th>Director Source</th>
+                    <th>Original URL</th>
+                </tr>
             </thead>
             <tbody>
                 {% for item in results %}
                 <tr>
-                    <td><a href="{{ item.Link }}" target="_blank" style="text-decoration:none; color:#333;">{{ item.Company[:45] }}</a></td>
-                    <td><span class="badge-email">{{ item.Email }}</span></td>
-                    <td><span class="badge-phone">{{ item.Phone }}</span></td>
+                    <td><strong>{{ item.Company[:50] }}</strong></td>
+                    <td style="color:#d35400; font-weight:bold;">{{ item.Email }}</td>
+                    <td>{{ item.Phone }}</td>
+                    <td><span class="source-tag">{{ item.Director }}</span></td>
+                    <td><a href="{{ item.Source_URL }}" target="_blank" style="color:#3498db; font-size:11px;">View Link</a></td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
-
+        
         <div class="pagination">
             {% if current_page > 1 %}
-            <a href="/search?product={{ p }}&location={{ l }}&page={{ current_page - 1 }}" class="page-link">Previous</a>
+            <a href="/search?product={{ p }}&location={{ l }}&page={{ current_page - 1 }}" class="p-btn">Prev Page</a>
             {% endif %}
-            <span class="page-link active">{{ current_page }}</span>
-            <a href="/search?product={{ p }}&location={{ l }}&page={{ current_page + 1 }}" class="page-link">Next</a>
+            <a href="/search?product={{ p }}&location={{ l }}&page={{ current_page + 1 }}" class="p-btn">Next Page</a>
         </div>
         {% endif %}
     </div>
@@ -136,11 +141,10 @@ def search():
     l = request.args.get('location', '')
     page_num = int(request.args.get('page', 1))
     
-    # For high-volume, we fetch the large list once
-    # In a production app, we would cache this, but for now, we re-run to get fresh 2025 data
-    data = volume_extractor(p, l)
+    scanner = DirectorScanner(p, l)
+    data = scanner.run_full_scan()
     
-    # Simple Pagination: show 100 per page
+    # Paginate by 100
     per_page = 100
     start = (page_num - 1) * per_page
     end = start + per_page
@@ -150,7 +154,5 @@ def search():
         HTML_TEMPLATE, 
         results=paginated_data, 
         total_count=len(data),
-        query_info=f"{p} in {l}",
-        p=p, l=l,
-        current_page=page_num
+        p=p, l=l, current_page=page_num
     )
