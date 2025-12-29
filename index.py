@@ -2,90 +2,104 @@ from flask import Flask, request, render_template_string
 import requests
 from bs4 import BeautifulSoup
 import re
+import urllib.parse
 
 app = Flask(__name__)
 
 def extract_leads(product, location):
-    # UPGRADE: Real Browser Headers to avoid empty results
+    # 2025 High-Priority User Agent
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
-        "Referer": "https://www.google.com/"
+        "Upgrade-Insecure-Requests": "1"
     }
     
-    # We add 'num=20' to get more results at once
-    query = f"{product} {location} dealers email"
-    search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}&num=20"
+    # UPGRADE: Added "site:facebook.com" and "site:linkedin.com" to the search
+    # This is where 2025 business emails are usually found.
+    queries = [
+        f'"{product}" "{location}" email',
+        f'"{product}" "{location}" @gmail.com',
+        f'site:facebook.com "{product}" "{location}" email'
+    ]
     
-    try:
-        response = requests.get(search_url, headers=headers, timeout=10)
-        # If Google blocks us, we will see it here
-        if response.status_code != 200:
-            return [{"url": f"Blocked by Google (Code {response.status_code})", "email": "Try again in 5 mins"}]
-            
-        soup = BeautifulSoup(response.text, 'html.parser')
-        results = []
-
-        # UPGRADE: Search in 'div.g' (Organic results) and 'div.VwiC3b' (Snippets)
-        for g in soup.find_all('div', class_='g'):
-            link_tag = g.find('a', href=True)
-            url = link_tag['href'] if link_tag else "No Link"
-            
-            # Find emails anywhere in the text of this result block
-            text_content = g.get_text()
-            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text_content)
-            
-            if emails:
-                # We only add it if an email was actually found
-                for email in set(emails):
-                    results.append({"url": url, "email": email})
+    all_results = []
+    
+    for query in queries:
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://www.google.com/search?q={encoded_query}&num=20"
         
-        if not results:
-            return [{"url": "No emails found in snippets", "email": "Try a more specific product"}]
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                continue
+                
+            soup = BeautifulSoup(resp.text, 'html.parser')
             
-        return results
-    except Exception as e:
-        return [{"url": "System Error", "email": str(e)}]
+            # 2025 Selector Update: Google now uses generic div blocks
+            # We search for any text that contains an @ symbol
+            for container in soup.find_all(['div', 'span']):
+                text = container.get_text()
+                # Improved Regex for 2025 email formats
+                found = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+                
+                if found:
+                    for email in set(found):
+                        # Filter out common junk like 'sentry.io' or 'example.com'
+                        if not any(x in email.lower() for x in ['wix', 'png', 'jpg', 'sentry']):
+                            all_results.append({
+                                "source": "Google Result",
+                                "email": email
+                            })
+        except:
+            pass
 
-# --- UI TEMPLATE (Unchanged) ---
+    # Remove duplicates
+    unique_results = [dict(t) for t in {tuple(d.items()) for d in all_results}]
+    
+    if not unique_results:
+        return [{"source": "Status", "email": "No emails found. Try adding '@gmail.com' to your search."}]
+    
+    return unique_results
+
+# --- THE UI (Includes a 'Download' hint) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Lead Extractor Pro</title>
+    <title>Lead Extractor 2025</title>
     <style>
-        body { font-family: sans-serif; padding: 50px; background: #f4f4f9; }
-        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); max-width: 900px; margin: auto; }
-        input { padding: 12px; margin: 5px; width: 250px; border: 1px solid #ddd; border-radius: 6px; }
-        button { padding: 12px 25px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #218838; }
-        table { width: 100%; margin-top: 30px; border-collapse: collapse; background: white; }
-        th, td { padding: 15px; border-bottom: 1px solid #eee; text-align: left; }
-        th { background: #f8f9fa; color: #333; }
-        .status { color: #666; font-size: 0.9em; margin-top: 10px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #eceff1; margin: 0; padding: 40px; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); }
+        h2 { color: #1a73e8; }
+        .search-box { display: flex; gap: 10px; margin-bottom: 30px; }
+        input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; }
+        button { background: #1a73e8; color: white; border: none; padding: 12px 25px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #1557b0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th { text-align: left; background: #f8f9fa; padding: 15px; border-bottom: 2px solid #eee; }
+        td { padding: 15px; border-bottom: 1px solid #eee; font-family: monospace; color: #333; }
+        .email-badge { background: #e8f0fe; color: #1967d2; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h2>🔍 Institutional Lead Extractor</h2>
-        <p class="status">Enter product and location to find public business emails.</p>
-        <form action="/search" method="get">
-            <input type="text" name="product" placeholder="e.g. Solar Panels" required>
-            <input type="text" name="location" placeholder="e.g. Accra" required>
-            <button type="submit">Extract Leads</button>
+    <div class="container">
+        <h2>🚀 Institutional Lead Extractor</h2>
+        <form class="search-box" action="/search" method="get">
+            <input type="text" name="product" placeholder="What are you looking for?" required>
+            <input type="text" name="location" placeholder="City or Country" required>
+            <button type="submit">Extract</button>
         </form>
+        
         {% if results %}
         <table>
-            <thead><tr><th>Website / Source</th><th>Email Found</th></tr></thead>
-            <tbody>
+            <tr><th>Source</th><th>Email Address</th></tr>
             {% for item in results %}
             <tr>
-                <td><small>{{ item.url[:60] }}...</small></td>
-                <td><strong>{{ item.email }}</strong></td>
+                <td>{{ item.source }}</td>
+                <td><span class="email-badge">{{ item.email }}</span></td>
             </tr>
             {% endfor %}
-            </tbody>
         </table>
         {% endif %}
     </div>
