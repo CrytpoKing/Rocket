@@ -1,115 +1,132 @@
 import os
 import requests
 import re
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from flask import Flask, request, render_template_string, jsonify
+from flask import Flask, request, render_template_string
 
 app = Flask(__name__)
 
 # --- CONFIGURATION ---
 SERPER_API_KEY = "be17ec094e7663c3d4be5ad14f89429ae34ed76f"
+# Get a free key at resend.com to send thousands of emails instantly
+RESEND_API_KEY = "re_your_free_key_here" 
 
-# SMTP Settings (Use App Passwords for Gmail)
-SMTP_SERVER = "smtp.gmail.com" 
-SMTP_PORT = 587
-SMTP_USER = "YOUR_EMAIL@gmail.com"
-SMTP_PASS = "YOUR_APP_PASSWORD" 
+# --- KEEPING YOUR EXTRACTION CODE EXACTLY AS IT IS ---
+class DirectorScanner:
+    def __init__(self, product, location):
+        self.product = product
+        self.location = location
+        self.leads = []
+        self.headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
 
-# --- LEAD ENGINE (REUSE FROM PREVIOUS VERSION) ---
-def deep_volume_extractor(product, location):
-    # ... (Keep your previous extraction code here) ...
-    # For now, I'm using a simplified version for the demo
-    return [{"Company": "Example Corp", "Email": "test@example.com", "Phone": "123", "Director": "Google"}]
+    def scan_source(self, platform_query, source_name):
+        url = "https://google.serper.dev/search"
+        for page in range(1, 6):
+            payload = {"q": platform_query, "num": 20, "page": page}
+            try:
+                response = requests.post(url, headers=self.headers, json=payload, timeout=15)
+                data = response.json()
+                for item in data.get('organic', []):
+                    snippet = item.get('snippet', '')
+                    emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
+                    phones = re.findall(r'\+?\d[\d\-\s\(\)]{9,}\d', snippet)
+                    if emails:
+                        for email in set(emails):
+                            if not any(x in email.lower() for x in ['png', 'jpg', 'wix']):
+                                self.leads.append({
+                                    "Company": item.get('title', 'Business'),
+                                    "Email": email.lower(),
+                                    "Phone": phones[0] if phones else "N/A",
+                                    "Source_URL": item.get('link', '#'),
+                                    "Director": source_name
+                                })
+            except: break
 
-# --- MAILING ENGINE ---
-def send_bulk_campaign(emails, subject, body):
-    sent_count = 0
+    def run_full_scan(self):
+        self.scan_source(f'"{self.product}" "{self.location}" email', "Google Search")
+        self.scan_source(f'site:yellowpages.com "{self.product}" "{self.location}"', "Yellow Pages")
+        self.scan_source(f'site:thomasnet.com "{self.product}" "{self.location}"', "ThomasNet")
+        self.scan_source(f'site:facebook.com "{self.product}" "{self.location}" email', "Facebook")
+        unique = {v['Email']: v for v in self.leads}.values()
+        return list(unique)
+
+# --- NEW BULK MAILING LOGIC ---
+def send_bulk_resend(emails, subject, content):
+    url = "https://api.resend.com/emails"
+    headers = {"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"}
+    
+    # Resend allows sending to multiple people in one API call
+    payload = {
+        "from": "Acquisition <onboarding@resend.dev>",
+        "to": emails[:50], # Send to first 50 leads as a batch
+        "subject": subject,
+        "html": content
+    }
     try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASS)
-        
-        for recipient in emails:
-            msg = MIMEMultipart()
-            msg['From'] = f"Lead Engine <{SMTP_USER}>"
-            msg['To'] = recipient
-            msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'html'))
-            
-            server.send_message(msg)
-            sent_count += 1
-            
-        server.quit()
-        return sent_count
-    except Exception as e:
-        print(f"Mail Error: {e}")
-        return 0
+        resp = requests.post(url, headers=headers, json=payload)
+        return resp.status_code == 200
+    except: return False
 
-# --- THE UNIFIED UI ---
+# --- UI WITH SIDEBAR CONTROL PANEL ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Lead Engine + Bulk Mailer</title>
+    <title>Lead Extractor Pro + Mailer</title>
     <style>
-        body { font-family: 'Inter', sans-serif; background: #f0f2f5; margin: 0; display: flex; height: 100vh; }
-        .sidebar { width: 300px; background: #1a73e8; color: white; padding: 20px; }
-        .main-content { flex: 1; padding: 30px; overflow-y: auto; }
-        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 20px; }
-        .form-group { margin-bottom: 15px; }
-        input, textarea { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
-        button { background: #34a853; color: white; border: none; padding: 12px 25px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
-        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; }
-        .status-success { color: #2ecc71; font-weight: bold; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; margin: 0; display: flex; height: 100vh; }
+        .sidebar { width: 260px; background: #1a73e8; color: white; padding: 30px; display: flex; flex-direction: column; gap: 20px; }
+        .main { flex: 1; padding: 40px; overflow-y: auto; }
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 25px; }
+        .sidebar h2 { margin-bottom: 30px; font-size: 22px; border-bottom: 1px solid #ffffff33; padding-bottom: 10px; }
+        .nav-item { color: #ffffffcc; text-decoration: none; font-weight: 500; display: flex; align-items: center; gap: 10px; }
+        .nav-item.active { color: white; font-weight: bold; }
+        input, textarea { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
+        button { background: #34a853; color: white; border: none; padding: 14px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
+        th, td { padding: 12px; border-bottom: 1px solid #eee; text-align: left; }
+        .tag { background: #e8f0fe; color: #1a73e8; padding: 4px 8px; border-radius: 4px; font-size: 11px; }
     </style>
 </head>
 <body>
     <div class="sidebar">
         <h2>🛠 Control Panel</h2>
-        <hr>
-        <p>1. Extract Leads</p>
-        <p>2. Review Results</p>
-        <p>3. Send Bulk Campaign</p>
+        <a href="/" class="nav-item active">🏠 Dashboard</a>
+        <a href="#" class="nav-item">📈 Analytics</a>
+        <a href="#" class="nav-item">⚙️ Settings</a>
+        <div style="margin-top:auto; font-size: 12px; color: #ffffff99;">V2025.12 High Volume</div>
     </div>
 
-    <div class="main-content">
+    <div class="main">
         <div class="card">
-            <h3>🚀 Step 1: Extract Leads</h3>
+            <h3>🔍 1. Extract Institutional Leads</h3>
             <form action="/search" method="get" style="display: flex; gap: 10px;">
-                <input type="text" name="product" placeholder="Product" required>
-                <input type="text" name="location" placeholder="Location" required>
-                <button type="submit" style="width: auto;">Search</button>
+                <input type="text" name="product" placeholder="Product (e.g. Caterpillar)" required>
+                <input type="text" name="location" placeholder="Location (e.g. Accra)" required>
+                <button type="submit" style="width: 150px;">Extract</button>
             </form>
         </div>
 
         {% if results %}
-        <div class="card">
-            <h3>✉️ Step 2: Send Bulk Email to {{ total_count }} Leads</h3>
-            <form action="/send-campaign" method="post">
+        <div class="card" style="border-left: 5px solid #1a73e8;">
+            <h3>✉️ 2. Bulk Email Campaign ({{ total }} Leads Found)</h3>
+            <form action="/send-bulk" method="post">
                 <input type="hidden" name="emails" value="{{ email_list }}">
-                <div class="form-group">
-                    <input type="text" name="subject" placeholder="Email Subject" required>
-                </div>
-                <div class="form-group">
-                    <textarea name="message" rows="5" placeholder="Your Message (HTML allowed)" required></textarea>
-                </div>
-                <button type="submit" style="background: #1a73e8;">Launch Campaign Now</button>
+                <input type="text" name="subject" placeholder="Campaign Subject" required>
+                <textarea name="msg" rows="4" placeholder="Email body (HTML support enabled)..." required></textarea>
+                <button type="submit" style="background: #1a73e8;">Launch Campaign</button>
             </form>
         </div>
 
         <div class="card">
-            <h3>📋 Extraction Results</h3>
+            <h3>📋 3. Lead Results</h3>
             <table>
-                <thead><tr><th>Name</th><th>Email</th><th>Source</th></tr></thead>
+                <thead><tr><th>Company</th><th>Email</th><th>Source</th></tr></thead>
                 <tbody>
                     {% for item in results %}
                     <tr>
-                        <td>{{ item.Company[:40] }}</td>
-                        <td>{{ item.Email }}</td>
-                        <td>{{ item.Director }}</td>
+                        <td><strong>{{ item.Company[:40] }}</strong></td>
+                        <td><span style="color:#d35400;">{{ item.Email }}</span></td>
+                        <td><span class="tag">{{ item.Director }}</span></td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -117,9 +134,9 @@ HTML_TEMPLATE = """
         </div>
         {% endif %}
 
-        {% if success_msg %}
-        <div class="card status-success">
-            ✅ {{ success_msg }}
+        {% if status %}
+        <div class="card" style="background: #e6fffa; border: 1px solid #b2f5ea; color: #2c7a7b;">
+            <b>Status:</b> {{ status }}
         </div>
         {% endif %}
     </div>
@@ -133,26 +150,16 @@ def home():
 
 @app.route('/search')
 def search():
-    p = request.args.get('product', '')
-    l = request.args.get('location', '')
-    data = deep_volume_extractor(p, l) # Use the logic from the previous step
+    p, l = request.args.get('product', ''), request.args.get('location', '')
+    scanner = DirectorScanner(p, l)
+    data = scanner.run_full_scan()
     email_list = ",".join([x['Email'] for x in data])
-    
-    return render_template_string(
-        HTML_TEMPLATE, 
-        results=data, 
-        total_count=len(data),
-        email_list=email_list
-    )
+    return render_template_string(HTML_TEMPLATE, results=data[:100], total=len(data), email_list=email_list)
 
-@app.route('/send-campaign', methods=['POST'])
-def campaign():
+@app.route('/send-bulk', methods=['POST'])
+def send_bulk():
     emails = request.form.get('emails', '').split(',')
-    subject = request.form.get('subject', '')
-    message = request.form.get('message', '')
-    
-    count = send_bulk_campaign(emails, subject, message)
-    return render_template_string(HTML_TEMPLATE, success_msg=f"Successfully sent {count} emails!")
-
-if __name__ == "__main__":
-    app.run(debug=True)
+    sub = request.form.get('subject', '')
+    msg = request.form.get('msg', '')
+    success = send_bulk_resend(emails, sub, msg)
+    return render_template_string(HTML_TEMPLATE, status="Campaign Launched Successfully!" if success else "Failed to send.")
