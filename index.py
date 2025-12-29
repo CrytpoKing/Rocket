@@ -1,6 +1,7 @@
 import os
 import requests
 import re
+import time
 from flask import Flask, request, render_template_string
 
 app = Flask(__name__)
@@ -8,85 +9,115 @@ app = Flask(__name__)
 # Your Serper API Key
 SERPER_API_KEY = "be17ec094e7663c3d4be5ad14f89429ae34ed76f"
 
-def serper_lead_engine(product, location):
+def serper_volume_engine(product, location):
     url = "https://google.serper.dev/search"
-    
-    # UPGRADE: We run TWO different searches to maximize results
-    # 1. Broad directory search
-    # 2. Direct @gmail/@outlook search (very common for local dealers)
-    queries = [
-        f'"{product}" "{location}" email',
-        f'"{product}" "{location}" "@gmail.com" OR "@outlook.com"',
-        f'site:facebook.com "{product}" "{location}" email'
-    ]
-    
     all_leads = []
     
-    for q in queries:
-        payload = {"q": q, "num": 20}
-        headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=10)
-            data = response.json()
-            
-            for item in data.get('organic', []):
-                snippet = item.get('snippet', '')
-                # Refined Regex to catch emails even with spaces or weird formatting
-                emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
+    # We vary the search terms to find DIFFERENT results in each loop
+    # This helps bypass Google's limit on a single query
+    search_variations = [
+        f'"{product}" "{location}" email',
+        f'"{product}" "{location}" contact @gmail.com',
+        f'"{product}" "{location}" sales @outlook.com',
+        f'site:yellowpages.com "{product}" "{location}"',
+        f'site:facebook.com "{product}" "{location}" "about"',
+        f'site:linkedin.com/company "{product}" "{location}"'
+    ]
+    
+    headers = {'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json'}
+
+    # Loop through variations and pages to hit the 200 goal
+    for query in search_variations:
+        # Check 3 pages for each variation (total ~60 results per variation)
+        for page in range(1, 4): 
+            payload = {
+                "q": query,
+                "num": 20,
+                "page": page
+            }
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=15)
+                data = response.json()
                 
-                if emails:
-                    for email in set(emails):
-                        if not any(x in email.lower() for x in ['png', 'jpg', 'wix', 'sentry']):
-                            all_leads.append({
-                                "Company": item.get('title', 'Business'),
-                                "Email": email,
-                                "Link": item.get('link', '#')
-                            })
-        except:
-            continue
+                for item in data.get('organic', []):
+                    snippet = item.get('snippet', '')
+                    title = item.get('title', 'Business')
+                    link = item.get('link', '#')
+                    
+                    # Search snippet for emails
+                    emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
+                    
+                    if emails:
+                        for email in set(emails):
+                            if not any(x in email.lower() for x in ['png', 'jpg', 'wix', 'sentry']):
+                                all_leads.append({
+                                    "Company": title,
+                                    "Email": email.lower(),
+                                    "Link": link
+                                })
+                
+                # If we already have enough, we can stop early to save API credits
+                if len(all_leads) >= 250:
+                    break
+            except:
+                continue
+    
+    # Final cleanup: Remove duplicates based on the Email address
+    unique_leads = {}
+    for lead in all_leads:
+        unique_leads[lead['Email']] = lead
+        
+    return list(unique_leads.values())
 
-    # Remove duplicates
-    unique_leads = {v['Email'].lower(): v for v in all_leads}.values()
-    return list(unique_leads)
-
-# --- CLEAN UI ---
+# --- UI WITH RESULT COUNT ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Lead Extractor Pro</title>
+    <title>Lead Extractor Ultra</title>
     <style>
-        body { font-family: sans-serif; background: #f4f4f9; padding: 40px; color: #333; }
-        .container { max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        .search-row { display: flex; gap: 10px; margin-bottom: 30px; }
-        input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 5px; }
-        button { background: #007bff; color: white; border: none; padding: 12px 25px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        body { font-family: 'Inter', sans-serif; background: #f8f9fa; padding: 20px; }
+        .container { max-width: 1100px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+        .stats-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 10px; background: #eef2f7; border-radius: 8px; }
+        .search-form { display: flex; gap: 10px; margin-bottom: 30px; }
+        input { flex: 1; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }
+        button { background: #1a73e8; color: white; border: none; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-weight: bold; }
         table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 15px; border-bottom: 1px solid #eee; }
-        .email { background: #e7f3ff; color: #007bff; padding: 5px 10px; border-radius: 4px; font-weight: bold; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #eee; }
+        .count-badge { background: #28a745; color: white; padding: 5px 12px; border-radius: 20px; font-size: 0.9em; }
+        .email-link { color: #1a73e8; font-weight: 600; text-decoration: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🚀 Institutional Lead Extractor</h2>
-        <form class="search-row" action="/search" method="get">
-            <input type="text" name="product" placeholder="Product (e.g. Generators)" required>
-            <input type="text" name="location" placeholder="Location (e.g. Accra)" required>
-            <button type="submit">Extract Leads</button>
+        <h2>🚀 Institutional Lead Extractor <small>(High Volume)</small></h2>
+        
+        <form class="search-form" action="/search" method="get">
+            <input type="text" name="product" placeholder="Product/Brand" required>
+            <input type="text" name="location" placeholder="City/Country" required>
+            <button type="submit">Extract 200+ Leads</button>
         </form>
+
         {% if results %}
+        <div class="stats-bar">
+            <span><strong>Results for:</strong> {{ query_info }}</span>
+            <span class="count-badge">Found {{ results|length }} Unique Leads</span>
+        </div>
+        
         <table>
-            <tr><th>Company</th><th>Email Address</th></tr>
-            {% for item in results %}
-            <tr>
-                <td><a href="{{ item.Link }}" target="_blank" style="text-decoration:none; color:inherit;">{{ item.Company[:50] }}</a></td>
-                <td><span class="email">{{ item.Email }}</span></td>
-            </tr>
-            {% endfor %}
+            <thead>
+                <tr><th>Business Name</th><th>Email</th><th>Source</th></tr>
+            </thead>
+            <tbody>
+                {% for item in results %}
+                <tr>
+                    <td>{{ item.Company[:50] }}</td>
+                    <td><a href="mailto:{{ item.Email }}" class="email-link">{{ item.Email }}</a></td>
+                    <td><a href="{{ item.Link }}" target="_blank" style="font-size: 0.8em; color: #999;">View Source</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
         </table>
-        {% elif searched %}
-        <p>Still no results? Try searching for just the product and city (e.g. "Solar Accra") without extra keywords.</p>
         {% endif %}
     </div>
 </body>
@@ -101,5 +132,5 @@ def home():
 def search():
     p = request.args.get('product', '')
     l = request.args.get('location', '')
-    data = serper_lead_engine(p, l)
-    return render_template_string(HTML_TEMPLATE, results=data, searched=True)
+    data = serper_volume_engine(p, l)
+    return render_template_string(HTML_TEMPLATE, results=data, query_info=f"{p} in {l}")
